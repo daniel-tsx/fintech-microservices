@@ -1,0 +1,85 @@
+name: ledgerflow
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgerflow
+      POSTGRES_PASSWORD: ledgerflow
+      POSTGRES_DB: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+      - ./apps/payment-service/migrations/0001_payment.sql:/migrations/payment.sql:ro
+      - ./apps/wallet-service/migrations/0001_wallet.sql:/migrations/wallet.sql:ro
+      - ./apps/ledger-service/migrations/0001_ledger.sql:/migrations/ledger.sql:ro
+      - ./apps/psp-simulator/migrations/0001_psp.sql:/migrations/psp.sql:ro
+      - ./apps/reconciliation-service/migrations/0001_reconciliation.sql:/migrations/reconciliation.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerflow -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.15
+    command: ["redpanda", "start", "--overprovisioned", "--smp=1", "--memory=512M", "--reserve-memory=0M", "--node-id=0", "--check=false", "--kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092", "--advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092"]
+    ports: ["19092:19092", "9644:9644"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  risk-service:
+    build: .
+    command: ["pnpm", "tsx", "apps/risk-service/src/main.ts"]
+    environment: ["PORT=3003"]
+    ports: ["3003:3003"]
+
+  psp-simulator:
+    build: .
+    command: ["pnpm", "tsx", "apps/psp-simulator/src/main.ts"]
+    environment: ["PORT=3004"]
+    ports: ["3004:3004"]
+
+  payment-service:
+    build: .
+    command: ["pnpm", "tsx", "apps/payment-service/src/main.ts"]
+    environment:
+      PORT: 3002
+      RISK_URL: http://risk-service:3003
+      PSP_URL: http://psp-simulator:3004
+      PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:?set PSP_WEBHOOK_SECRET in .env}
+      KAFKA_BROKERS: redpanda:9092
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/payments
+    ports: ["3002:3002"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+      risk-service: { condition: service_started }
+      psp-simulator: { condition: service_started }
+
+  wallet-service:
+    build: .
+    command: ["pnpm", "tsx", "apps/wallet-service/src/main.ts"]
+    environment: ["PORT=3001"]
+    ports: ["3001:3001"]
+    depends_on: { postgres: { condition: service_healthy } }
+
+  ledger-service:
+    build: .
+    command: ["pnpm", "tsx", "apps/ledger-service/src/main.ts"]
+    environment: ["PORT=3005"]
+    ports: ["3005:3005"]
+    depends_on: { postgres: { condition: service_healthy } }
+
+  reconciliation-service:
+    build: .
+    command: ["pnpm", "tsx", "apps/reconciliation-service/src/main.ts"]
+    environment: ["PORT=3006"]
+    ports: ["3006:3006"]
+    depends_on: { postgres: { condition: service_healthy } }
+
+volumes:
+  postgres-data:

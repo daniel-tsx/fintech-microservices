@@ -1,0 +1,20 @@
+# Messaging
+
+Status: contracts and reliability mechanics implemented; workers not wired to HTTP processes.
+
+Events use the envelope in `packages/contracts/src/index.ts`: `eventId`, versioned type, timestamp, correlation/causation IDs, aggregate ID, and payload. Topics should be partitioned by aggregate ID so facts about one payment remain ordered.
+
+At-least-once delivery is the only honest end-to-end guarantee: a consumer may apply its database effect and crash before acknowledging Kafka. Therefore consumers claim `eventId` in an inbox in the same local database transaction as their effect. Poison messages use bounded retries, exponential jittered backoff, then a dead-letter table/topic with operator review.
+
+Important facts are `payment.created.v1`, `risk.approved.v1`, `risk.rejected.v1`, `payment.authorized.v1`, `payment.authorization-failed.v1`, `payment.captured.v1`, `payment.refund-requested.v1`, `payment.refunded.v1`, `transfer.requested.v1`, `transfer.completed.v1`, `ledger.entry-posted.v1`, `settlement.created.v1`, and `reconciliation.mismatch-detected.v1`.
+
+| Event family | Required payload fields |
+|---|---|
+| Payment lifecycle | `paymentId`, `status`, `amountMinor`, `currency`; create also has `walletId`, `merchantId` |
+| Risk decision | `paymentId`, `reasonCodes` |
+| Transfer | `transferId`, source/destination wallet IDs, `amountMinor`, `currency` |
+| Ledger posted | `journalId`, `referenceType`, `referenceId`, `amountMinor`, `currency` |
+| Settlement | `settlementId`, `merchantId`, `netAmountMinor`, `currency`, window |
+| Reconciliation mismatch | `discrepancyId`, `paymentId`, `type`, expected/actual summaries |
+
+Schema evolution is additive within version 1. Breaking payload semantics require a new event version and a migration window; consumers ignore unknown additive fields.
