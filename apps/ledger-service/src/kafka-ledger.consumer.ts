@@ -1,4 +1,4 @@
-import { eventEnvelopeSchema, eventTypes, paymentCapturedEventSchema, paymentEventsTopic } from '@ledgerflow/contracts';
+import { eventEnvelopeSchema, eventTypes, paymentCapturedEventSchema, paymentEventsTopic, paymentRefundedEventSchema } from '@ledgerflow/contracts';
 import { structuredLog } from '@ledgerflow/platform';
 import { Kafka, logLevel, type Consumer } from 'kafkajs';
 import type { PostgresLedgerRepository } from './postgres-ledger.repository.js';
@@ -43,6 +43,18 @@ export class KafkaLedgerConsumer {
             eventId: event.eventId,
             correlationId: event.correlationId,
             paymentId: event.payload.paymentId,
+            topic,
+            partition,
+            offset: message.offset,
+          });
+        } else if (parsed.eventType === eventTypes.paymentRefunded) {
+          const event = paymentRefundedEventSchema.parse(parsed);
+          const result = await this.repository.processPaymentRefunded(event);
+          structuredLog('info', result === 'DUPLICATE' ? 'duplicate refund event ignored by ledger inbox' : 'payment refund posted to ledger', {
+            eventId: event.eventId,
+            correlationId: event.correlationId,
+            paymentId: event.payload.paymentId,
+            refundId: event.payload.refundId,
             topic,
             partition,
             offset: message.offset,

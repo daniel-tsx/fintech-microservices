@@ -6,7 +6,7 @@ function docker(args: string[], input?: string): string {
   return execFileSync('docker', args, { cwd: process.cwd(), encoding: 'utf8', env: composeEnvironment, input });
 }
 
-function sql(database: 'payments' | 'ledger', statement: string): string {
+function sql(database: 'payments' | 'ledger' | 'psp', statement: string): string {
   return docker(['compose', 'exec', '-T', 'postgres', 'psql', '-U', 'ledgerflow', '-d', database, '-Atc', statement]).trim();
 }
 
@@ -55,16 +55,22 @@ const paymentInput = {
 const headers = { 'Idempotency-Key': `durable-demo-${crypto.randomUUID()}`, 'x-correlation-id': correlationId, 'x-request-id': requestId };
 const created = await postJson<{ id: string; status: string }>('http://127.0.0.1:3002/v1/payments', paymentInput, headers);
 await postJson(`http://127.0.0.1:3002/v1/payments/${created.id}/authorize`, { customerId: paymentInput.customerId }, { 'x-correlation-id': correlationId });
-await postJson(`http://127.0.0.1:3002/v1/payments/${created.id}/capture`, {}, { 'x-correlation-id': correlationId });
+await postJson(`http://127.0.0.1:3002/v1/payments/${created.id}/capture`, {}, { 'x-correlation-id': correlationId, 'Idempotency-Key': `capture-${created.id}` });
+await postJson(`http://127.0.0.1:3002/v1/payments/${created.id}/refunds`, { amountMinor: paymentInput.amountMinor }, { 'x-correlation-id': correlationId, 'Idempotency-Key': `refund-${created.id}` });
 
-await waitFor('ledger journal', async () => Number(sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id = '${created.id}'`)) === 1 ? true : null);
+const refundId = await waitFor('refund operation', async () => {
+  const id = sql('payments', `SELECT id FROM payment_operations WHERE payment_id = '${created.id}' AND operation_type = 'REFUND' AND status = 'SUCCEEDED' LIMIT 1`);
+  return id === '' ? null : id;
+});
+await waitFor('capture and refund journals', async () => Number(sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}')`)) === 2 ? true : null);
 const paymentBeforeRestart = sql('payments', `SELECT id || '|' || status FROM payments WHERE id = '${created.id}'`);
 const outboxBeforeRestart = sql('payments', `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = '${created.id}' AND published_at IS NOT NULL`);
-const ledgerBeforeRestart = sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id = '${created.id}'`);
-const entriesBeforeRestart = sql('ledger', `SELECT COUNT(*) FROM ledger_entries WHERE journal_id IN (SELECT id FROM ledger_journals WHERE reference_id = '${created.id}')`);
+const ledgerBeforeRestart = sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}')`);
+const entriesBeforeRestart = sql('ledger', `SELECT COUNT(*) FROM ledger_entries WHERE journal_id IN (SELECT id FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}'))`);
+const pspOperationsBeforeRestart = sql('psp', `SELECT COUNT(*) FROM psp_operations WHERE internal_payment_id = '${created.id}'`);
 
-console.log('Restarting Payment and proving its row survives...');
-docker(['compose', 'restart', 'payment-service']);
+console.log('Restarting PSP and Payment and proving provider/payment state survives...');
+docker(['compose', 'restart', 'psp-simulator', 'payment-service']);
 await waitFor('Payment readiness after restart', async () => (await fetch('http://127.0.0.1:3002/health/ready')).ok ? true : null);
 const persistedPayment = await waitFor('persisted payment HTTP read', async () => {
   const response = await fetch(`http://127.0.0.1:3002/v1/payments/${created.id}`);
@@ -75,24 +81,29 @@ console.log('Restarting Ledger and proving its journal survives...');
 docker(['compose', 'restart', 'ledger-service']);
 await waitFor('Ledger readiness after restart', async () => (await fetch('http://127.0.0.1:3005/health/ready')).ok ? true : null);
 
-const capturedEnvelope = sql('payments', `SELECT payload::text FROM outbox_events WHERE aggregate_id = '${created.id}' AND payload->>'eventType' = 'payment.captured.v1' LIMIT 1`);
-const replay = spawnSync('docker', ['compose', 'exec', '-T', 'redpanda', 'rpk', 'topic', 'produce', 'ledgerflow.payments.v1', '--brokers', 'redpanda:9092', '--key', created.id], {
-  cwd: process.cwd(), encoding: 'utf8', env: composeEnvironment, input: `${capturedEnvelope}\n`,
-});
-if (replay.status !== 0) throw new Error(`Kafka replay failed: ${replay.stderr}`);
+for (const eventType of ['payment.captured.v1', 'payment.refunded.v1']) {
+  const envelope = sql('payments', `SELECT payload::text FROM outbox_events WHERE aggregate_id = '${created.id}' AND payload->>'eventType' = '${eventType}' LIMIT 1`);
+  const replay = spawnSync('docker', ['compose', 'exec', '-T', 'redpanda', 'rpk', 'topic', 'produce', 'ledgerflow.payments.v1', '--brokers', 'redpanda:9092', '--key', created.id], {
+    cwd: process.cwd(), encoding: 'utf8', env: composeEnvironment, input: `${envelope}\n`,
+  });
+  if (replay.status !== 0) throw new Error(`Kafka replay failed for ${eventType}: ${replay.stderr}`);
+}
 await new Promise((resolve) => setTimeout(resolve, 2_000));
 
-const ledgerAfterReplay = sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id = '${created.id}'`);
-const entriesAfterReplay = sql('ledger', `SELECT COUNT(*) FROM ledger_entries WHERE journal_id IN (SELECT id FROM ledger_journals WHERE reference_id = '${created.id}')`);
-const inboxCount = sql('ledger', `SELECT COUNT(*) FROM inbox_events WHERE event_id = (SELECT source_event_id FROM ledger_journals WHERE reference_id = '${created.id}')`);
+const ledgerAfterReplay = sql('ledger', `SELECT COUNT(*) FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}')`);
+const entriesAfterReplay = sql('ledger', `SELECT COUNT(*) FROM ledger_entries WHERE journal_id IN (SELECT id FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}'))`);
+const inboxCount = sql('ledger', `SELECT COUNT(*) FROM inbox_events WHERE event_id IN (SELECT source_event_id FROM ledger_journals WHERE reference_id IN ('${created.id}', '${refundId}'))`);
+const pspOperationsAfterRestart = sql('psp', `SELECT COUNT(*) FROM psp_operations WHERE internal_payment_id = '${created.id}'`);
 
 console.log(JSON.stringify({
   paymentId: created.id,
+  refundId,
   correlationId,
   requestId,
   paymentBeforeRestart,
   persistedPayment,
   publishedOutboxEvents: Number(outboxBeforeRestart),
+  pspOperations: { beforeRestart: Number(pspOperationsBeforeRestart), afterRestart: Number(pspOperationsAfterRestart) },
   ledgerBeforeRestart: { journals: Number(ledgerBeforeRestart), entries: Number(entriesBeforeRestart) },
   ledgerAfterDuplicateReplay: { journals: Number(ledgerAfterReplay), entries: Number(entriesAfterReplay), inboxRows: Number(inboxCount) },
   duplicateWasSafe: ledgerBeforeRestart === ledgerAfterReplay && entriesBeforeRestart === entriesAfterReplay,

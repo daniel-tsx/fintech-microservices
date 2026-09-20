@@ -10,7 +10,7 @@ This is an educational system, not a PCI-DSS-compliant payment product. It never
 2. Read [docs/architecture.md](docs/architecture.md) and [docs/payment-flow.md](docs/payment-flow.md).
 3. Run `pnpm install`, `pnpm test`, and a demo such as `pnpm demo:happy-payment`.
 4. With Docker installed, copy `.env.example` to `.env` and run `docker compose up --build`.
-5. Run `pnpm demo:durable-payment` to create/capture a real payment, restart both services, replay the Kafka event, and prove the Ledger remains unchanged.
+5. Run `pnpm demo:payment-lifecycle` to authorize, capture, and refund through the real PSP/Payment/Kafka/Ledger path, restart services, replay Kafka events, and prove the Ledger remains unchanged.
 
 The durable vertical slice is documented in [docs/outbox-inbox.md](docs/outbox-inbox.md); use [docs/database-debugging.md](docs/database-debugging.md) to inspect each PostgreSQL and Redpanda stage.
 

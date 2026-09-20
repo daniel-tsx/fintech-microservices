@@ -1,6 +1,6 @@
 # Double-entry ledger
 
-Status: durable Payment-capture posting wired; general domain API remains available.
+Status: durable Payment capture and refund posting wired; general domain API remains available.
 
 Every journal contains at least two entries, one currency, positive integer minor-unit amounts, and equal debit/credit totals. `assertBalanced` enforces the invariant in the domain. PostgreSQL checks positive amounts, and migration `0002_inbox_and_balance.sql` installs deferred constraint triggers that re-evaluate the complete journal at commit. The durable adapter inserts its journal and entries in one transaction, so an unbalanced commit fails with SQLSTATE `23514`.
 
@@ -23,4 +23,4 @@ erDiagram
 
 Corrections append a reversing journal; they never edit history. Duplicate business references replay the original journal. Money is an integer number of minor units in TypeScript and `bigint` in PostgreSQL; JavaScript floating point is never used.
 
-For `payment.captured.v1`, `PostgresLedgerRepository.processPaymentCaptured` debits a processor-clearing ASSET account and credits a merchant-payable LIABILITY account by the same `amountMinor`. The inbox row and both entries share the transaction. A duplicate `eventId` returns `DUPLICATE` without appending anything.
+For `payment.captured.v1`, `PostgresLedgerRepository.processPaymentCaptured` debits a processor-clearing ASSET account and credits a merchant-payable LIABILITY account by the same `amountMinor`. Authorization does not post money. For `payment.refunded.v1`, the repository appends a new `REFUND` journal, debits the merchant liability, credits the processor asset, and links `reverses_journal_id` to the original capture journal when present. It never edits capture history. The inbox row and entries share the transaction; a duplicate `eventId` returns `DUPLICATE` without appending anything.

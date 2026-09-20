@@ -1,4 +1,4 @@
-import type { PaymentCapturedEvent } from '@ledgerflow/contracts';
+import type { PaymentCapturedEvent, PaymentRefundedEvent } from '@ledgerflow/contracts';
 import { and, eq, sql } from 'drizzle-orm';
 import { assertBalanced, type LedgerEntryInput, type LedgerJournal } from './ledger.domain.js';
 import { inboxEvents, ledgerAccounts, ledgerEntries, ledgerJournals } from './database.schema.js';
@@ -14,6 +14,19 @@ export class PostgresLedgerRepository {
   constructor(private readonly db: LedgerDatabase, private readonly probe: LedgerTransactionProbe = {}) {}
 
   async processPaymentCaptured(event: PaymentCapturedEvent): Promise<'PROCESSED' | 'DUPLICATE'> {
+    return this.processFinancialEvent(event, 'PAYMENT', event.payload.paymentId, false);
+  }
+
+  async processPaymentRefunded(event: PaymentRefundedEvent): Promise<'PROCESSED' | 'DUPLICATE'> {
+    return this.processFinancialEvent(event, 'REFUND', event.payload.refundId, true);
+  }
+
+  private async processFinancialEvent(
+    event: PaymentCapturedEvent | PaymentRefundedEvent,
+    referenceType: 'PAYMENT' | 'REFUND',
+    referenceId: string,
+    reverse: boolean,
+  ): Promise<'PROCESSED' | 'DUPLICATE'> {
     return this.db.transaction(async (tx) => {
       const claimed = await tx.insert(inboxEvents).values({
         eventId: event.eventId,
@@ -26,17 +39,21 @@ export class PostgresLedgerRepository {
       const processorAccountId = await this.ensureAccount(tx, 'PLATFORM', PROCESSOR_OWNER_ID, 'ASSET', event.payload.currency);
       const merchantAccountId = await this.ensureAccount(tx, 'MERCHANT', event.payload.merchantId, 'LIABILITY', event.payload.currency);
       const entries: LedgerEntryInput[] = [
-        { accountId: processorAccountId, direction: 'DEBIT', amountMinor: event.payload.amountMinor, currency: event.payload.currency },
-        { accountId: merchantAccountId, direction: 'CREDIT', amountMinor: event.payload.amountMinor, currency: event.payload.currency },
+        { accountId: processorAccountId, direction: reverse ? 'CREDIT' : 'DEBIT', amountMinor: event.payload.amountMinor, currency: event.payload.currency },
+        { accountId: merchantAccountId, direction: reverse ? 'DEBIT' : 'CREDIT', amountMinor: event.payload.amountMinor, currency: event.payload.currency },
       ];
       assertBalanced(entries);
       const journalId = crypto.randomUUID();
+      const [capturedJournal] = reverse
+        ? await tx.select({ id: ledgerJournals.id }).from(ledgerJournals).where(and(eq(ledgerJournals.referenceType, 'PAYMENT'), eq(ledgerJournals.referenceId, event.payload.paymentId))).limit(1)
+        : [];
       await tx.insert(ledgerJournals).values({
         id: journalId,
-        referenceType: 'PAYMENT',
-        referenceId: event.payload.paymentId,
+        referenceType,
+        referenceId,
         correlationId: event.correlationId,
         sourceEventId: event.eventId,
+        ...(capturedJournal === undefined ? {} : { reversesJournalId: capturedJournal.id }),
       });
       await tx.insert(ledgerEntries).values(entries.map((entry) => ({ id: crypto.randomUUID(), journalId, ...entry })));
       return 'PROCESSED';

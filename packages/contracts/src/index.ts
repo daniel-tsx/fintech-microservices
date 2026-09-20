@@ -24,11 +24,16 @@ export const eventTypes = {
   riskApproved: 'risk.approved.v1',
   riskRejected: 'risk.rejected.v1',
   paymentAuthorized: 'payment.authorized.v1',
+  paymentAuthorizationDeclined: 'payment.authorization-declined.v1',
   paymentAuthorizationFailed: 'payment.authorization-failed.v1',
+  paymentAuthorizationUnknown: 'payment.authorization-unknown.v1',
   paymentCaptured: 'payment.captured.v1',
   paymentCaptureFailed: 'payment.capture-failed.v1',
+  paymentCaptureUnknown: 'payment.capture-unknown.v1',
   paymentRefundRequested: 'payment.refund-requested.v1',
   paymentRefunded: 'payment.refunded.v1',
+  paymentRefundFailed: 'payment.refund-failed.v1',
+  paymentRefundUnknown: 'payment.refund-unknown.v1',
   transferRequested: 'transfer.requested.v1',
   transferCompleted: 'transfer.completed.v1',
   ledgerEntryPosted: 'ledger.entry-posted.v1',
@@ -60,16 +65,42 @@ export function createEvent<T extends Record<string, unknown>>(input: {
 }
 
 export type PaymentStatus =
-  | 'PENDING'
-  | 'RISK_CHECKING'
+  | 'RISK_PENDING'
+  | 'RISK_APPROVED'
+  | 'RISK_REJECTED'
   | 'AUTHORIZATION_PENDING'
   | 'AUTHORIZED'
+  | 'AUTHORIZATION_DECLINED'
+  | 'AUTHORIZATION_FAILED'
+  | 'AUTHORIZATION_UNKNOWN'
   | 'CAPTURE_PENDING'
   | 'CAPTURED'
-  | 'FAILED'
+  | 'CAPTURE_FAILED'
+  | 'CAPTURE_UNKNOWN'
   | 'REFUND_PENDING'
   | 'PARTIALLY_REFUNDED'
-  | 'REFUNDED';
+  | 'REFUNDED'
+  | 'REFUND_FAILED'
+  | 'REFUND_UNKNOWN'
+  | 'CANCELLED';
+
+export const pspScenarios = [
+  'SUCCESS',
+  'DECLINE',
+  'HTTP_500',
+  'TIMEOUT_BEFORE_PROCESSING',
+  'TIMEOUT_AFTER_PROCESSING',
+  'SLOW_SUCCESS',
+  'SLOW_DECLINE',
+  'WEBHOOK_BEFORE_HTTP_RESPONSE',
+  'WEBHOOK_AFTER_HTTP_RESPONSE',
+  'DUPLICATE_WEBHOOK',
+  'DELAYED_WEBHOOK',
+  'OUT_OF_ORDER_WEBHOOK',
+  'HTTP_RESPONSE_LOST_AFTER_SUCCESS',
+] as const;
+
+export type PspScenario = (typeof pspScenarios)[number];
 
 export interface Money {
   amountMinor: number;
@@ -100,6 +131,24 @@ export const paymentCapturedEventSchema = eventEnvelopeSchema.extend({
 });
 
 export type PaymentCapturedEvent = z.infer<typeof paymentCapturedEventSchema>;
+
+export const paymentRefundedPayloadSchema = z.object({
+  paymentId: z.string().uuid(),
+  refundId: z.string().uuid(),
+  walletId: z.string().uuid(),
+  merchantId: z.string().uuid(),
+  status: z.enum(['PARTIALLY_REFUNDED', 'REFUNDED']),
+  amountMinor: minorUnitsSchema,
+  currency: currencySchema,
+});
+
+export const paymentRefundedEventSchema = eventEnvelopeSchema.extend({
+  eventType: z.literal(eventTypes.paymentRefunded),
+  eventVersion: z.literal(1),
+  payload: paymentRefundedPayloadSchema,
+});
+
+export type PaymentRefundedEvent = z.infer<typeof paymentRefundedEventSchema>;
 
 export interface LedgerPostingPayload extends Money {
   journalId: string;

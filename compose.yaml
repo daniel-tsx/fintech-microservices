@@ -43,8 +43,14 @@ services:
   psp-simulator:
     build: .
     command: ["pnpm", "tsx", "apps/psp-simulator/src/main.ts"]
-    environment: ["PORT=3004"]
+    environment:
+      PORT: 3004
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/psp
+      PAYMENT_WEBHOOK_URL: http://payment-service:3002/v1/webhooks/psp
+      PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:?set PSP_WEBHOOK_SECRET in .env}
     ports: ["3004:3004"]
+    depends_on:
+      migrations: { condition: service_completed_successfully }
 
   payment-service:
     build: .
@@ -54,6 +60,8 @@ services:
       RISK_URL: http://risk-service:3003
       PSP_URL: http://psp-simulator:3004
       PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:?set PSP_WEBHOOK_SECRET in .env}
+      ALLOW_PSP_TEST_SCENARIOS: "true"
+      PAYMENT_RECOVERY_AGE_MS: 2000
       KAFKA_BROKERS: redpanda:9092
       DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/payments
     ports: ["3002:3002"]

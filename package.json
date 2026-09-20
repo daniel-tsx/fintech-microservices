@@ -14,12 +14,17 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "demo:happy-payment": "tsx scripts/demo.ts happy-payment",
+    "demo:payment-happy-path": "tsx scripts/demo.ts happy-payment",
     "demo:payment-timeout": "tsx scripts/demo.ts payment-timeout",
+    "demo:psp-timeout-after-success": "tsx scripts/demo.ts payment-timeout",
+    "demo:payment-recovery": "tsx scripts/demo.ts payment-timeout",
     "demo:duplicate-webhook": "tsx scripts/demo.ts duplicate-webhook",
+    "demo:webhook-ordering": "tsx scripts/demo.ts webhook-ordering",
     "demo:transfer-concurrency": "tsx scripts/demo.ts transfer-concurrency",
     "demo:reconciliation-mismatch": "tsx scripts/demo.ts reconciliation-mismatch",
     "demo:refund": "tsx scripts/demo.ts refund",
-    "demo:durable-payment": "tsx scripts/durable-payment.ts"
+    "demo:durable-payment": "tsx scripts/durable-payment.ts",
+    "demo:payment-lifecycle": "tsx scripts/durable-payment.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createEvent, eventTypes, paymentCapturedEventSchema, paymentEventsTopic } from '@ledgerflow/contracts';
+import { createEvent, eventTypes, paymentCapturedEventSchema, paymentEventsTopic, paymentRefundedEventSchema } from '@ledgerflow/contracts';
 import { KafkaMessageProducer, OutboxPublisher } from '@ledgerflow/platform';
 import { Kafka, logLevel } from 'kafkajs';
 import postgres from 'postgres';
@@ -13,18 +13,23 @@ import type { PspPort, RiskPort } from '../../apps/payment-service/src/payment.d
 import { createLedgerDatabase } from '../../apps/ledger-service/src/database.js';
 import { KafkaLedgerConsumer } from '../../apps/ledger-service/src/kafka-ledger.consumer.js';
 import { PostgresLedgerRepository } from '../../apps/ledger-service/src/postgres-ledger.repository.js';
+import { createPspDatabase } from '../../apps/psp-simulator/src/database.js';
+import { PostgresPspRepository, type PspWebhookScheduler } from '../../apps/psp-simulator/src/postgres-psp.repository.js';
+import type { WebhookEnvelope } from '../../apps/payment-service/src/payment.domain.js';
 
 const paymentUrl = process.env.PAYMENT_TEST_DATABASE_URL ?? 'postgres://ledgerflow:ledgerflow@127.0.0.1:5432/payments';
 const ledgerUrl = process.env.LEDGER_TEST_DATABASE_URL ?? 'postgres://ledgerflow:ledgerflow@127.0.0.1:5432/ledger';
+const pspUrl = process.env.PSP_TEST_DATABASE_URL ?? 'postgres://ledgerflow:ledgerflow@127.0.0.1:5432/psp';
 const brokers = (process.env.KAFKA_TEST_BROKERS ?? '127.0.0.1:19092').split(',');
 const kafkaEnabled = process.env.SKIP_KAFKA_INTEGRATION !== '1';
 const kafkaIt = kafkaEnabled ? it : it.skip;
 
 const risk: RiskPort = { evaluate: async () => ({ decision: 'APPROVE', reasonCodes: [] }) };
 const psp: PspPort = {
-  authorize: async () => ({ outcome: 'APPROVED', externalPaymentId: crypto.randomUUID() }),
-  capture: async ({ externalPaymentId }) => ({ outcome: 'APPROVED', externalPaymentId }),
-  refund: async ({ externalPaymentId }) => ({ outcome: 'APPROVED', externalPaymentId }),
+  authorize: async () => ({ outcome: 'SUCCEEDED', externalPaymentId: crypto.randomUUID(), providerSequence: 1 }),
+  capture: async ({ externalPaymentId }) => ({ outcome: 'SUCCEEDED', externalPaymentId: externalPaymentId!, providerSequence: 2 }),
+  refund: async ({ externalPaymentId }) => ({ outcome: 'SUCCEEDED', externalPaymentId: externalPaymentId!, providerSequence: 3 }),
+  query: async () => ({ outcome: 'NOT_FOUND' }),
 };
 
 async function resetDatabase(url: string, migrations: string[]): Promise<void> {
@@ -55,11 +60,13 @@ function only<T>(rows: T[]): T {
 describe.sequential('durable Payment -> Kafka -> Ledger flow', () => {
   const paymentConnection = createPaymentDatabase(paymentUrl);
   const ledgerConnection = createLedgerDatabase(ledgerUrl);
+  const pspConnection = createPspDatabase(pspUrl);
   const kafka = new Kafka({ clientId: 'ledgerflow-integration-setup', brokers, logLevel: logLevel.NOTHING });
 
   beforeAll(async () => {
-    await resetDatabase(paymentUrl, ['apps/payment-service/migrations/0001_payment.sql', 'apps/payment-service/migrations/0002_outbox_leases.sql']);
+    await resetDatabase(paymentUrl, ['apps/payment-service/migrations/0001_payment.sql', 'apps/payment-service/migrations/0002_outbox_leases.sql', 'apps/payment-service/migrations/0003_payment_lifecycle.sql']);
     await resetDatabase(ledgerUrl, ['apps/ledger-service/migrations/0001_ledger.sql', 'apps/ledger-service/migrations/0002_inbox_and_balance.sql']);
+    await resetDatabase(pspUrl, ['apps/psp-simulator/migrations/0001_psp.sql', 'apps/psp-simulator/migrations/0002_durable_operations.sql']);
     if (kafkaEnabled) {
       const admin = kafka.admin();
       await admin.connect();
@@ -75,6 +82,7 @@ describe.sequential('durable Payment -> Kafka -> Ledger flow', () => {
   afterAll(async () => {
     await paymentConnection.client.end();
     await ledgerConnection.client.end();
+    await pspConnection.client.end();
   });
 
   it('rolls back payment and outbox together when creation fails between the writes', async () => {
@@ -107,12 +115,67 @@ describe.sequential('durable Payment -> Kafka -> Ledger flow', () => {
     }
   });
 
+  it('persists one PSP operation and returns the original result when the same operation ID is retried after restart', async () => {
+    const scheduled: WebhookEnvelope[] = [];
+    const scheduler: PspWebhookScheduler = {
+      deliverNow: async (webhook) => { scheduled.push(webhook); },
+      enqueue: async (webhook) => { scheduled.push(webhook); },
+    };
+    const operationId = crypto.randomUUID();
+    const input = { operationId, paymentId: crypto.randomUUID(), amountMinor: 1250, currency: 'USD' };
+    const firstConnection = createPspDatabase(pspUrl);
+    const first = await new PostgresPspRepository(firstConnection.db, scheduler).authorize(input);
+    await firstConnection.client.end();
+    const secondConnection = createPspDatabase(pspUrl);
+    try {
+      const replay = await new PostgresPspRepository(secondConnection.db, scheduler).authorize({ ...input, scenario: 'DECLINE' });
+      expect(replay).toEqual(first);
+      const { count } = only(await secondConnection.client<{ count: number }[]>`SELECT COUNT(*)::int AS count FROM psp_operations WHERE operation_id = ${operationId}`);
+      expect(count).toBe(1);
+    } finally {
+      await secondConnection.client.end();
+    }
+  });
+
+  it('durably deduplicates a PSP webhook and atomically resolves payment, history, and outbox', async () => {
+    const unknownPsp: PspPort = {
+      authorize: async () => ({ outcome: 'UNKNOWN', code: 'PSP_TIMEOUT' }),
+      capture: async () => ({ outcome: 'UNKNOWN', code: 'PSP_TIMEOUT' }),
+      refund: async () => ({ outcome: 'UNKNOWN', code: 'PSP_TIMEOUT' }),
+      query: async () => ({ outcome: 'UNKNOWN', code: 'PSP_STATUS_UNAVAILABLE' }),
+    };
+    const repository = new PostgresPaymentRepository(paymentConnection.db);
+    const application = new PaymentApplication(repository, risk, unknownPsp);
+    const request = { walletId: crypto.randomUUID(), merchantId: crypto.randomUUID(), customerId: crypto.randomUUID(), amountMinor: 2750, currency: 'USD' };
+    const payment = await application.create(request, `webhook-${crypto.randomUUID()}`, crypto.randomUUID());
+    expect((await application.authorize(payment.id, request.customerId, crypto.randomUUID())).status).toBe('AUTHORIZATION_UNKNOWN');
+    const [operation] = await paymentConnection.client<{ id: string }[]>`SELECT id FROM payment_operations WHERE payment_id = ${payment.id} AND operation_type = 'AUTHORIZE'`;
+    expect(operation).toBeDefined();
+    const webhook: WebhookEnvelope = {
+      eventId: crypto.randomUUID(), eventType: 'AUTHORIZED', operationId: operation!.id, operationType: 'AUTHORIZE', paymentId: payment.id,
+      externalPaymentId: crypto.randomUUID(), amountMinor: request.amountMinor, currency: request.currency, providerSequence: 41, occurredAt: new Date().toISOString(),
+    };
+    expect(await application.ingestPspWebhook(webhook)).toBe('ACCEPTED');
+    expect(await application.ingestPspWebhook(webhook)).toBe('DUPLICATE');
+    const claimed = await repository.claimWebhookBatch('integration-webhook-worker', 10, 30_000);
+    expect(claimed).toHaveLength(1);
+    expect(await application.processPspWebhook('integration-webhook-worker', claimed[0]!, webhook.eventId)).toBe('PROCESSED');
+    const result = only(await paymentConnection.client<{ status: string; webhook_count: number; history_count: number; event_count: number }[]>`
+      SELECT
+        (SELECT status FROM payments WHERE id = ${payment.id}) AS status,
+        (SELECT COUNT(*)::int FROM webhook_events WHERE event_id = ${webhook.eventId} AND processing_status = 'PROCESSED') AS webhook_count,
+        (SELECT COUNT(*)::int FROM payment_state_history WHERE payment_id = ${payment.id} AND next_status = 'AUTHORIZED') AS history_count,
+        (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id = ${payment.id} AND payload->>'eventType' = 'payment.authorized.v1') AS event_count
+    `);
+    expect(result).toEqual({ status: 'AUTHORIZED', webhook_count: 1, history_count: 1, event_count: 1 });
+  });
+
   kafkaIt('publishes through Kafka and deduplicates a real duplicate in the atomic Ledger inbox transaction', async () => {
     const application = new PaymentApplication(new PostgresPaymentRepository(paymentConnection.db), risk, psp);
     const input = { walletId: crypto.randomUUID(), merchantId: crypto.randomUUID(), customerId: crypto.randomUUID(), amountMinor: 3200, currency: 'USD' };
     const payment = await application.create(input, `kafka-flow-${crypto.randomUUID()}`, crypto.randomUUID());
     await application.authorize(payment.id, input.customerId, crypto.randomUUID());
-    await application.capture(payment.id, crypto.randomUUID());
+    await application.capture(payment.id, `capture-${payment.id}`, crypto.randomUUID());
 
     const consumer = new KafkaLedgerConsumer(brokers, new PostgresLedgerRepository(ledgerConnection.db), `ledger-integration-${crypto.randomUUID()}`);
     const producer = new KafkaMessageProducer('ledgerflow-integration-producer', brokers);
@@ -170,6 +233,29 @@ describe.sequential('durable Payment -> Kafka -> Ledger flow', () => {
     expect({ inbox_before, journals_before }).toEqual({ inbox_before: 0, journals_before: 0 });
     expect(await new PostgresLedgerRepository(ledgerConnection.db).processPaymentCaptured(event)).toBe('PROCESSED');
     expect(await new PostgresLedgerRepository(ledgerConnection.db).processPaymentCaptured(event)).toBe('DUPLICATE');
+  });
+
+  it('posts a refund as one deduplicated reversal journal with balanced entries', async () => {
+    const paymentId = crypto.randomUUID();
+    const refundId = crypto.randomUUID();
+    const merchantId = crypto.randomUUID();
+    const event = paymentRefundedEventSchema.parse(createEvent({
+      eventType: eventTypes.paymentRefunded,
+      aggregateId: paymentId,
+      correlationId: crypto.randomUUID(),
+      payload: { paymentId, refundId, walletId: crypto.randomUUID(), merchantId, status: 'PARTIALLY_REFUNDED', amountMinor: 725, currency: 'USD' },
+    }));
+    const repository = new PostgresLedgerRepository(ledgerConnection.db);
+    expect(await repository.processPaymentRefunded(event)).toBe('PROCESSED');
+    expect(await repository.processPaymentRefunded(event)).toBe('DUPLICATE');
+    const entries = await ledgerConnection.client<{ direction: string; amount_minor: number }[]>`
+      SELECT entry.direction, entry.amount_minor::int
+      FROM ledger_entries entry
+      JOIN ledger_journals journal ON journal.id = entry.journal_id
+      WHERE journal.reference_type = 'REFUND' AND journal.reference_id = ${refundId}
+      ORDER BY entry.direction
+    `;
+    expect(entries).toEqual([{ direction: 'CREDIT', amount_minor: 725 }, { direction: 'DEBIT', amount_minor: 725 }]);
   });
 
   it('enforces the double-entry invariant in PostgreSQL at commit', async () => {

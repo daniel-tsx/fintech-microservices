@@ -11,12 +11,15 @@ interface ObservedPayment { amountMinor: number; occurredAt: number }
 export class DeterministicRiskService implements RiskPort {
   private readonly blockedCustomers = new Set<string>();
   private readonly history = new Map<string, ObservedPayment[]>();
+  private readonly decisions = new Map<string, RiskDecision>();
 
   constructor(private readonly policy: RiskPolicy, private readonly now: () => number = Date.now) {}
 
   block(customerId: string): void { this.blockedCustomers.add(customerId); }
 
-  async evaluate(input: { customerId: string; amountMinor: number; currency: string }): Promise<RiskDecision> {
+  async evaluate(input: { paymentId: string; customerId: string; amountMinor: number; currency: string }): Promise<RiskDecision> {
+    const prior = this.decisions.get(input.paymentId);
+    if (prior !== undefined) return structuredClone(prior);
     const reasons: string[] = [];
     if (this.blockedCustomers.has(input.customerId)) reasons.push('CUSTOMER_BLOCKED');
     if (input.amountMinor > this.policy.maximumTransactionMinor) reasons.push('TRANSACTION_AMOUNT_LIMIT');
@@ -29,6 +32,8 @@ export class DeterministicRiskService implements RiskPort {
       recent.push({ amountMinor: input.amountMinor, occurredAt: this.now() });
       this.history.set(input.customerId, recent);
     }
-    return { decision: reasons.length === 0 ? 'APPROVE' : 'REJECT', reasonCodes: reasons };
+    const decision: RiskDecision = { decision: reasons.length === 0 ? 'APPROVE' : 'REJECT', reasonCodes: reasons };
+    this.decisions.set(input.paymentId, decision);
+    return structuredClone(decision);
   }
 }

@@ -1,30 +1,44 @@
-# Failure scenarios
+# Failure and crash scenarios
 
-Status: current test/demo catalog.
+Status: current Iteration 3 catalog.
 
-| Failure | System response | Evidence |
-|---|---|---|
-| Same payment request twice | Replay same payment; one outbox fact | `payment.test.ts` |
-| Same key, different body | Reject | `payment.test.ts` |
-| Concurrent overspend | One reservation wins | `wallet-concurrency.test.ts` |
-| PSP succeeds, response times out | Remain pending; reconcile/webhook | `payment.test.ts`, `demo:payment-timeout` |
-| Duplicate webhook | Signature replay/inbox rejects effect | `webhook.test.ts` |
-| Duplicate Kafka event | Inbox returns `DUPLICATE` | `messaging.test.ts` |
-| Poison message | Bounded retry then DLQ | `messaging.test.ts` |
-| Unbalanced journal | Domain rejects; PostgreSQL also rejects at commit | `ledger.test.ts`, `durable-payment.integration.ts` |
-| Ledger unavailable during transfer | Release source hold | `transfer-saga.test.ts` |
-| PSP/internal mismatch | Open discrepancy | `reconciliation.test.ts` |
+## External payment uncertainty
 
-## Durable Payment-to-Ledger crash matrix
+| Failure | What happened / what we know | What we do not know | Stored state | Recovery / retry rule |
+|---|---|---|---|---|
+| Risk rejects | A deterministic business decision was received | nothing about PSP, because it was not called | `RISK_REJECTED` | terminal; do not authorize |
+| PSP declines | Provider committed a negative business result | none | `AUTHORIZATION_DECLINED` | terminal for this payment intent |
+| PSP HTTP 500 before effect | No success was returned; simulator did not create an operation | whether a real provider accepted before its 500 can be provider-specific | `AUTHORIZATION_FAILED` | provider contract determines retry; reuse operation ID |
+| Timeout before processing | Transport deadline elapsed | whether request reached PSP until queried | `*_UNKNOWN` | query operation ID; `NOT_FOUND` permits same-ID retry |
+| Timeout after success | PSP committed but response was lost | local caller cannot infer success from timeout | `*_UNKNOWN` | webhook or status query confirms success |
+| Status API unavailable | No reliable external observation | external final state | remain `*_UNKNOWN` | defer; never convert absence of evidence into failure |
+| Duplicate webhook | Same authentic event was delivered again | nothing new | one `webhook_events` row | acknowledge duplicate; one business effect |
+| Out-of-order callback | Older provider sequence arrived late | network order has no business meaning | old row `IGNORED` | keep newer internal state |
 
-| Case | Crash/failure point | Durable result | Evidence |
-|---|---|---|---|
-| A | Payment transaction fails after payment insert | Transaction rolls back: no payment, idempotency, or outbox row | injected repository probe in `durable-payment.integration.ts` |
-| B | Payment commits; worker has not published; Payment stops | Payment and pending outbox row survive; lease-based worker publishes after restart | reconnect integration test; `demo:durable-payment` restarts Payment |
-| C | Kafka publish fails | `published_at` stays null; attempt/error/backoff recorded; later polling retries | `OutboxPublisher` unit tests and `PostgresOutboxStore` |
-| D | Kafka accepts; worker dies before marking | Lease expires; restarted worker republishes the same `eventId` | real Kafka integration test deliberately omits `markPublished` |
-| E | Ledger receives the same event twice | one inbox row, one journal, two entries | real Kafka duplicate-publication integration test and durable demo replay |
-| F | Ledger fails after inbox insert but before commit | inbox and ledger writes both roll back; redelivery later succeeds | injected Ledger transaction probe integration test |
-| G | Ledger commits then dies before offset commit | Kafka redelivers; inbox conflict prevents another journal | same real Kafka duplicate test exercises the equivalent durable state |
+## If the process crashes here
 
-The demo and tests cover the important application crash windows, not infrastructure failover. Database failover, Redpanda multi-node replication, poison-event replay operations, webhook delivery recovery, and durable transfer saga recovery remain future focused slices.
+| Point | Durable outcome after restart |
+|---|---|
+| Payment exists before authorize is requested | `RISK_PENDING` remains. Creation and authorization are separate client commands; retry authorize is idempotent at later boundaries. |
+| Risk approves but Payment dies before persisting | Payment remains `RISK_PENDING`; retry re-evaluates risk. Risk has no money side effect. |
+| Operation is persisted, then Payment dies before PSP call | `payment_operations=PENDING` and payment `*_PENDING` survive; recovery queries PSP and safely sends the same operation ID if absent. |
+| PSP receives/commits, then Payment dies before response | PSP record survives; local operation is pending. Recovery query or webhook converges it. |
+| HTTP response is lost | local state becomes `*_UNKNOWN`; timeout is not treated as failure. |
+| Webhook is persisted, then Payment dies | endpoint already returned 202; `webhook_events=PENDING` is leased by the restarted worker. |
+| Webhook processor dies mid-transaction | webhook status, operation, payment, history, and outbox all roll back together. |
+| Webhook transaction commits, process dies before outbox publication | pending outbox row survives and the restarted outbox worker publishes it. |
+| Capture commits locally, process dies before Kafka publish | `CAPTURED` and `payment.captured.v1` outbox row survive atomically. |
+| Kafka accepts, outbox worker dies before mark-published | event may be published again; Ledger `inbox_events` prevents another journal. |
+| Ledger dies during inbox/journal transaction | inbox and all entries roll back; Kafka redelivery processes later. |
+| Ledger commits, dies before offset commit | Kafka redelivers; inbox conflict returns `DUPLICATE`. |
+| Refund commits at PSP, Payment restarts before local transition | PSP operation and queued webhook survive; Payment recovery queries the same refund operation and emits one refund fact. |
+
+## Evidence map
+
+- `payment.test.ts`: risk rejection, decline/system-error/unknown separation, same-ID recovery, webhook replay, race, out-of-order callback, capture/refund timeout recovery, duplicate operations, and over-refund rejection.
+- `payment-state-machine.test.ts`: allowed transitions, terminal states, and forbidden regressions.
+- `webhook.test.ts`: HMAC, constant-time-compatible encoding, stale timestamp, and stateless authenticity.
+- `durable-payment.integration.ts`: PostgreSQL payment/outbox rollback, restart persistence, PSP operation restart idempotency, durable webhook deduplication, real Kafka duplicates, Ledger rollback, refund reversal, and database balance enforcement.
+- `messaging.test.ts`: outbox retry and poison-event handling mechanics.
+
+The integration test recreates schemas and must only target disposable databases. Infrastructure failover, multi-provider routing, automatic dead-letter remediation, and batch reconciliation remain outside this iteration.

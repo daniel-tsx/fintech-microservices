@@ -1,11 +1,12 @@
 import 'reflect-metadata';
 import { Body, Controller, Get, Module, Post } from '@nestjs/common';
 import { ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsPositive, IsString, Length } from 'class-validator';
+import { IsInt, IsPositive, IsString, IsUUID, Length } from 'class-validator';
 import { bootstrapService } from '@ledgerflow/platform';
 import { DeterministicRiskService } from './risk.service.js';
 
 class RiskRequest {
+  @ApiProperty() @IsUUID() paymentId!: string;
   @ApiProperty() @IsString() customerId!: string;
   @ApiProperty() @IsInt() @IsPositive() amountMinor!: number;
   @ApiProperty() @IsString() @Length(3, 3) currency!: string;
