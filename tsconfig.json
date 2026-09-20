@@ -18,5 +18,5 @@
       "@ledgerflow/platform": ["packages/platform/src/index.ts"]
     }
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "eslint.config.mjs"]
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "vitest.integration.config.ts", "eslint.config.mjs"]
 }

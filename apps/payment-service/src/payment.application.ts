@@ -165,7 +165,19 @@ export class PaymentApplication {
       paymentId: payment.id,
       expectedStatuses,
       patch: { ...patch, status },
-      event: createEvent({ eventType, aggregateId: payment.id, correlationId, payload: { paymentId: payment.id, status, amountMinor: payment.amountMinor, currency: payment.currency } }),
+      event: createEvent({
+        eventType,
+        aggregateId: payment.id,
+        correlationId,
+        payload: {
+          paymentId: payment.id,
+          walletId: payment.walletId,
+          merchantId: payment.merchantId,
+          status,
+          amountMinor: payment.amountMinor,
+          currency: payment.currency,
+        },
+      }),
     });
   }
 }

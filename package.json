@@ -11,13 +11,15 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "node node_modules/typescript/lib/tsc.js --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "demo:happy-payment": "tsx scripts/demo.ts happy-payment",
     "demo:payment-timeout": "tsx scripts/demo.ts payment-timeout",
     "demo:duplicate-webhook": "tsx scripts/demo.ts duplicate-webhook",
     "demo:transfer-concurrency": "tsx scripts/demo.ts transfer-concurrency",
     "demo:reconciliation-mismatch": "tsx scripts/demo.ts reconciliation-mismatch",
-    "demo:refund": "tsx scripts/demo.ts refund"
+    "demo:refund": "tsx scripts/demo.ts refund",
+    "demo:durable-payment": "tsx scripts/durable-payment.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

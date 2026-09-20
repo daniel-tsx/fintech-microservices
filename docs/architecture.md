@@ -46,4 +46,4 @@ No service may query another service's tables. Compose uses one PostgreSQL serve
 
 ## Current implementation boundary
 
-Core domain behavior, migrations, NestJS HTTP surfaces, Kafka producer, outbox/inbox algorithms, and tests are implemented. HTTP processes currently select in-memory learning adapters; the PostgreSQL/Drizzle runtime adapters and Kafka worker wiring are the next productionization slice. This keeps the repository honest: `compose up` demonstrates service/API boundaries but is not durable across restart yet.
+The Payment-to-Ledger vertical slice is durable in the Compose runtime: Payment writes PostgreSQL state and outbox intent atomically, the Payment worker publishes to Redpanda, and Ledger consumes through a PostgreSQL inbox transaction. See [outbox-inbox.md](outbox-inbox.md). In-memory adapters remain for deterministic unit tests and the standalone demo harness. Other bounded contexts retain their earlier learning adapters; this iteration does not claim system-wide production readiness.

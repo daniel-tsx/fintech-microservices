@@ -10,16 +10,19 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
-      - ./apps/payment-service/migrations/0001_payment.sql:/migrations/payment.sql:ro
-      - ./apps/wallet-service/migrations/0001_wallet.sql:/migrations/wallet.sql:ro
-      - ./apps/ledger-service/migrations/0001_ledger.sql:/migrations/ledger.sql:ro
-      - ./apps/psp-simulator/migrations/0001_psp.sql:/migrations/psp.sql:ro
-      - ./apps/reconciliation-service/migrations/0001_reconciliation.sql:/migrations/reconciliation.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ledgerflow -d postgres"]
       interval: 5s
       timeout: 3s
       retries: 20
+
+  migrations:
+    build: .
+    command: ["pnpm", "tsx", "scripts/migrate.ts"]
+    environment:
+      DATABASE_ADMIN_URL: postgres://ledgerflow:ledgerflow@postgres:5432/postgres
+    depends_on:
+      postgres: { condition: service_healthy }
 
   redpanda:
     image: redpandadata/redpanda:v24.2.15
@@ -55,7 +58,7 @@ services:
       DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/payments
     ports: ["3002:3002"]
     depends_on:
-      postgres: { condition: service_healthy }
+      migrations: { condition: service_completed_successfully }
       redpanda: { condition: service_healthy }
       risk-service: { condition: service_started }
       psp-simulator: { condition: service_started }
@@ -70,9 +73,14 @@ services:
   ledger-service:
     build: .
     command: ["pnpm", "tsx", "apps/ledger-service/src/main.ts"]
-    environment: ["PORT=3005"]
+    environment:
+      PORT: 3005
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/ledger
+      KAFKA_BROKERS: redpanda:9092
     ports: ["3005:3005"]
-    depends_on: { postgres: { condition: service_healthy } }
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      redpanda: { condition: service_healthy }
 
   reconciliation-service:
     build: .

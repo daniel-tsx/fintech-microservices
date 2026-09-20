@@ -8,4 +8,4 @@ Capture and refund derive their external intent from stable payment/amount ident
 
 In-flight duplicates should receive `409` or a stable `202` status resource; they must not pass through. Retention must exceed the longest client/event/DLQ retry horizon. Deleting keys after 24 hours while replaying a week-old message would create duplicate money movement.
 
-Implementation: `payment.application.ts`, `in-memory-payment.repository.ts`, and the `idempotency_keys` migration.
+Implementation: `payment.application.ts`, `postgres-payment.repository.ts`, `in-memory-payment.repository.ts` (unit tests), and the `idempotency_keys` migration.

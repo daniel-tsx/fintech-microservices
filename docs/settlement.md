@@ -6,4 +6,4 @@ Authorization reserves processor capacity; capture creates a payable; ledger pos
 
 A simplified settlement batch groups captured, unsettled payments by merchant and currency, subtracts refunds/fees, posts one balanced settlement journal, and emits `settlement.created.v1`. The batch requires a unique `(merchant, currency, window)` key and item uniqueness so retry cannot pay twice.
 
-Settlement execution is intentionally deferred until durable payment and ledger adapters are wired. Implementing it against in-memory projections would teach the wrong durability lesson.
+Settlement execution remains intentionally deferred. The durable Payment-to-Ledger slice is now wired, but this iteration deliberately stops at Ledger persistence rather than expanding into settlement.

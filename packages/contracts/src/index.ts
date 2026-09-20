@@ -38,6 +38,8 @@ export const eventTypes = {
 
 export type EventType = (typeof eventTypes)[keyof typeof eventTypes];
 
+export const paymentEventsTopic = 'ledgerflow.payments.v1';
+
 export function createEvent<T extends Record<string, unknown>>(input: {
   eventType: EventType;
   aggregateId: string;
@@ -79,6 +81,25 @@ export interface PaymentCreatedPayload extends Money {
   walletId: string;
   merchantId: string;
 }
+
+export const paymentCapturedPayloadSchema = z.object({
+  paymentId: z.string().uuid(),
+  walletId: z.string().uuid(),
+  merchantId: z.string().uuid(),
+  status: z.literal('CAPTURED'),
+  amountMinor: minorUnitsSchema,
+  currency: currencySchema,
+});
+
+export type PaymentCapturedPayload = z.infer<typeof paymentCapturedPayloadSchema>;
+
+export const paymentCapturedEventSchema = eventEnvelopeSchema.extend({
+  eventType: z.literal(eventTypes.paymentCaptured),
+  eventVersion: z.literal(1),
+  payload: paymentCapturedPayloadSchema,
+});
+
+export type PaymentCapturedEvent = z.infer<typeof paymentCapturedEventSchema>;
 
 export interface LedgerPostingPayload extends Money {
   journalId: string;

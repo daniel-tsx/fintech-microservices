@@ -62,3 +62,4 @@ export async function sha256(value: unknown): Promise<string> {
 export * from './outbox.js';
 export * from './inbox.js';
 export * from './kafka.js';
+export * from './logging.js';
