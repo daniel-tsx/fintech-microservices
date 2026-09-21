@@ -1,5 +1,5 @@
 import { createEvent, eventTypes, paymentEventsTopic, type EventEnvelope, type PaymentStatus } from '@ledgerflow/contracts';
-import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, lt, sql } from 'drizzle-orm';
 import { paymentOperations, paymentStateHistory, payments, idempotencyKeys, outboxEvents, webhookEvents } from './database.schema.js';
 import type { PaymentDatabase } from './database.js';
 import {
@@ -280,6 +280,17 @@ export class PostgresPaymentRepository implements PaymentRepository {
       .where(and(inArray(paymentOperations.status, ['PENDING', 'UNKNOWN']), lt(paymentOperations.updatedAt, olderThan)))
       .orderBy(paymentOperations.updatedAt).limit(limit);
     return rows.map(toOperation);
+  }
+
+  async listForReconciliation(windowStart: Date, windowEnd: Date, afterId: string | undefined, limit: number): Promise<Array<Payment & { operations: PaymentOperation[] }>> {
+    const conditions = [gte(payments.updatedAt, windowStart), lt(payments.updatedAt, windowEnd)];
+    if (afterId !== undefined) conditions.push(gt(payments.id, afterId));
+    const paymentRows = await this.db.select().from(payments).where(and(...conditions)).orderBy(asc(payments.id)).limit(limit);
+    if (paymentRows.length === 0) return [];
+    const operationRows = await this.db.select().from(paymentOperations).where(inArray(paymentOperations.paymentId, paymentRows.map((row) => row.id))).orderBy(asc(paymentOperations.id));
+    const operationsByPayment = new Map<string, PaymentOperation[]>();
+    for (const row of operationRows) operationsByPayment.set(row.paymentId, [...(operationsByPayment.get(row.paymentId) ?? []), toOperation(row)]);
+    return paymentRows.map((row) => ({ ...toPayment(row), operations: operationsByPayment.get(row.id) ?? [] }));
   }
 
   private async resolveInTransaction(tx: PaymentTransaction, operationId: string, result: PspResult, source: ResolutionSource, correlationId: string, causationId?: string): Promise<Payment> {

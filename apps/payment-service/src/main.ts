@@ -1,7 +1,8 @@
 import 'reflect-metadata';
-import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post, Req, ServiceUnavailableException, UnauthorizedException, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post, Query, Req, ServiceUnavailableException, UnauthorizedException, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { ApiHeader, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsISO8601, IsIn, IsInt, IsPositive, IsString, IsUUID, Matches, isUUID } from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsOptional, IsPositive, IsString, IsUUID, Matches, Max, Min, isUUID } from 'class-validator';
+import { Type } from 'class-transformer';
 import { pspScenarios, type PspScenario } from '@ledgerflow/contracts';
 import { bootstrapService, KafkaMessageProducer, requiredEnvironment, structuredLog } from '@ledgerflow/platform';
 import { PaymentApplication } from './payment.application.js';
@@ -36,6 +37,12 @@ class WebhookDto {
   @ApiProperty() @IsString() @Matches(/^[A-Z]{3}$/) currency!: string;
   @ApiProperty() @IsInt() @IsPositive() providerSequence!: number;
   @ApiProperty() @IsISO8601() occurredAt!: string;
+}
+class ReconciliationPageQuery {
+  @IsISO8601() windowStart!: string;
+  @IsISO8601() windowEnd!: string;
+  @IsOptional() @IsUUID() after?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit = 100;
 }
 
 const { client, db } = createPaymentDatabase(requiredEnvironment('DATABASE_URL'));
@@ -91,6 +98,12 @@ class PaymentController {
 
   @Get('v1/payments/:id')
   async get(@Param('id', ParseUUIDPipe) id: string) { const payment = await repository.findById(id); if (payment === null) mapError(new PaymentNotFoundError('payment not found')); return payment; }
+
+  @Get('v1/reconciliation/payments')
+  async reconciliationPayments(@Query() query: ReconciliationPageQuery) {
+    const data = await repository.listForReconciliation(new Date(query.windowStart), new Date(query.windowEnd), query.after, query.limit);
+    return { data, nextCursor: data.length === query.limit ? data.at(-1)?.id ?? null : null };
+  }
 
   @Post('v1/payments/:id/authorize')
   async authorize(@Param('id', ParseUUIDPipe) id: string, @Body() body: AuthorizeDto, @Headers('x-correlation-id') correlationId?: string, @Headers('x-test-psp-scenario') scenario?: string) {

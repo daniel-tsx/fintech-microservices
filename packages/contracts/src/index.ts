@@ -38,12 +38,15 @@ export const eventTypes = {
   transferCompleted: 'transfer.completed.v1',
   ledgerEntryPosted: 'ledger.entry-posted.v1',
   settlementCreated: 'settlement.created.v1',
+  ledgerRepairRequested: 'ledger.repair-requested.v1',
   reconciliationMismatchDetected: 'reconciliation.mismatch-detected.v1',
 } as const;
 
 export type EventType = (typeof eventTypes)[keyof typeof eventTypes];
 
 export const paymentEventsTopic = 'ledgerflow.payments.v1';
+export const settlementEventsTopic = 'ledgerflow.settlements.v1';
+export const repairEventsTopic = 'ledgerflow.repairs.v1';
 
 export function createEvent<T extends Record<string, unknown>>(input: {
   eventType: EventType;
@@ -149,6 +152,45 @@ export const paymentRefundedEventSchema = eventEnvelopeSchema.extend({
 });
 
 export type PaymentRefundedEvent = z.infer<typeof paymentRefundedEventSchema>;
+
+export const settlementCreatedPayloadSchema = z.object({
+  settlementBatchId: z.string().uuid(),
+  settlementItemId: z.string().uuid(),
+  providerSettlementId: z.string().min(1),
+  providerTransactionId: z.string().min(1),
+  paymentId: z.string().uuid(),
+  operationId: z.string().uuid(),
+  operationType: z.enum(['CAPTURE', 'REFUND']),
+  grossAmountMinor: minorUnitsSchema,
+  feeAmountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  netAmountMinor: z.number().int().refine(Number.isSafeInteger),
+  currency: currencySchema,
+});
+
+export const settlementCreatedEventSchema = eventEnvelopeSchema.extend({
+  eventType: z.literal(eventTypes.settlementCreated),
+  eventVersion: z.literal(1),
+  payload: settlementCreatedPayloadSchema,
+});
+
+export type SettlementCreatedEvent = z.infer<typeof settlementCreatedEventSchema>;
+
+export const ledgerRepairRequestedPayloadSchema = z.object({
+  discrepancyId: z.string().uuid(),
+  paymentId: z.string().uuid(),
+  walletId: z.string().uuid(),
+  merchantId: z.string().uuid(),
+  amountMinor: minorUnitsSchema,
+  currency: currencySchema,
+});
+
+export const ledgerRepairRequestedEventSchema = eventEnvelopeSchema.extend({
+  eventType: z.literal(eventTypes.ledgerRepairRequested),
+  eventVersion: z.literal(1),
+  payload: ledgerRepairRequestedPayloadSchema,
+});
+
+export type LedgerRepairRequestedEvent = z.infer<typeof ledgerRepairRequestedEventSchema>;
 
 export interface LedgerPostingPayload extends Money {
   journalId: string;

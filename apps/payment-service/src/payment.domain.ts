@@ -2,7 +2,7 @@ import type { EventEnvelope, PaymentStatus, PspScenario } from '@ledgerflow/cont
 
 export type PaymentOperationType = 'AUTHORIZE' | 'CAPTURE' | 'REFUND';
 export type PaymentOperationStatus = 'PENDING' | 'SUCCEEDED' | 'DECLINED' | 'FAILED' | 'UNKNOWN';
-export type ResolutionSource = 'HTTP' | 'WEBHOOK' | 'RECOVERY';
+export type ResolutionSource = 'HTTP' | 'WEBHOOK' | 'RECOVERY' | 'RECONCILIATION';
 
 export interface Payment {
   id: string;
@@ -85,6 +85,7 @@ export interface PaymentRepository {
   processWebhook(workerId: string, webhook: WebhookEnvelope, correlationId: string): Promise<'PROCESSED' | 'IGNORED'>;
   rescheduleWebhook(workerId: string, eventId: string, error: string): Promise<void>;
   findRecoverableOperations(olderThan: Date, limit: number): Promise<PaymentOperation[]>;
+  listForReconciliation(windowStart: Date, windowEnd: Date, afterId: string | undefined, limit: number): Promise<Array<Payment & { operations: PaymentOperation[] }>>;
 }
 
 export interface RiskPort {

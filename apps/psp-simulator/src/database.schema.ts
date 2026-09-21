@@ -33,3 +33,9 @@ export const pendingWebhooks = pgTable('pending_webhooks', {
   lastError: text('last_error'),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
 }, (table) => [index('pending_webhooks_delivery_idx').on(table.deliverAfter, table.attemptCount)]);
+
+export const pspSettlementStatements = pgTable('psp_settlement_statements', {
+  providerSettlementId: text('provider_settlement_id').primaryKey(),
+  statement: jsonb('statement').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

@@ -2,6 +2,9 @@ import { InMemoryPaymentRepository } from '../apps/payment-service/src/in-memory
 import { PaymentApplication } from '../apps/payment-service/src/payment.application.js';
 import { PspSimulator, signWebhook, WebhookVerifier } from '../apps/psp-simulator/src/psp-simulator.js';
 import { ReconciliationService } from '../apps/reconciliation-service/src/reconciliation.service.js';
+import { SettlementStatementSimulator } from '../apps/psp-simulator/src/settlement-statement.js';
+import { settlementEntries } from '../apps/ledger-service/src/postgres-ledger.repository.js';
+import { Ledger } from '../apps/ledger-service/src/ledger.domain.js';
 import { DeterministicRiskService } from '../apps/risk-service/src/risk.service.js';
 import { WalletBook } from '../apps/wallet-service/src/wallet.domain.js';
 
@@ -88,6 +91,40 @@ function reconciliationMismatch() {
   log('reconciliation-discrepancies', result);
 }
 
+function settlementFixture(statementScenario: 'MATCHED' | 'MISSING_TRANSACTION' | 'DUPLICATE_TRANSACTION' | 'AMOUNT_MISMATCH' = 'MATCHED') {
+  const paymentId = crypto.randomUUID(); const operationId = crypto.randomUUID(); const externalPaymentId = crypto.randomUUID();
+  const payment = { id: paymentId, walletId: crypto.randomUUID(), merchantId: crypto.randomUUID(), status: 'CAPTURED' as const, capturedAmountMinor: 10_000, refundedAmountMinor: 0, currency: 'USD', updatedAt: '2026-01-01T01:00:00.000Z', operations: [{ id: operationId, type: 'CAPTURE' as const, status: 'SUCCEEDED' as const, amountMinor: 10_000, currency: 'USD', externalPaymentId }] };
+  const psp = { paymentId, operationId, externalPaymentId, operation: 'CAPTURE' as const, amountMinor: 10_000, currency: 'USD', status: 'SUCCEEDED' as const, createdAt: '2026-01-01T01:00:00.000Z' };
+  const statement = new SettlementStatementSimulator('demo-secret', () => new Date('2026-01-02T00:00:00.000Z')).generate({ providerSettlementId: 'demo-batch', windowStart: '2026-01-01T00:00:00.000Z', windowEnd: '2026-01-02T00:00:00.000Z', currency: 'USD', records: [{ ...psp, providerSequence: 1 }], scenario: statementScenario });
+  const ledger = { referenceType: 'PAYMENT' as const, referenceId: paymentId, debitTotalMinor: 10_000, creditTotalMinor: 10_000, currency: 'USD' };
+  return { payment, psp, statement, ledger };
+}
+
+function settlementDemo(mode: 'happy' | 'ledger-missing' | 'provider-missing' | 'amount-mismatch' | 'duplicate' | 'manual-review') {
+  const input = settlementFixture(mode === 'duplicate' ? 'DUPLICATE_TRANSACTION' : 'MATCHED');
+  if (mode === 'amount-mismatch' || mode === 'manual-review') input.psp.amountMinor = 9_000;
+  const result = new ReconciliationService().reconcileEvidence({ payments: [input.payment], pspRecords: mode === 'provider-missing' ? [] : [input.psp], ledgerJournals: mode === 'ledger-missing' ? [] : [input.ledger], statement: input.statement, gracePeriodMs: 0, now: new Date('2026-01-03T00:00:00.000Z') });
+  log('payment', input.payment); log('psp', mode === 'provider-missing' ? [] : [input.psp]); log('settlement-statement', input.statement); log('reconciliation', result);
+  if (mode === 'happy' && result.settlementCandidates[0] !== undefined) {
+    const candidate = result.settlementCandidates[0]; const ledger = new Ledger(); const settlementItemId = crypto.randomUUID();
+    if (candidate.operation.type === 'AUTHORIZE') throw new Error('authorization cannot be settled');
+    const entries = settlementEntries({ settlementBatchId: crypto.randomUUID(), settlementItemId, providerSettlementId: input.statement.providerSettlementId, providerTransactionId: candidate.item.providerTransactionId, paymentId: candidate.payment.id, operationId: candidate.operation.id, operationType: candidate.operation.type, grossAmountMinor: candidate.item.grossAmountMinor, feeAmountMinor: candidate.item.feeAmountMinor, netAmountMinor: candidate.item.netAmountMinor, currency: candidate.item.currency }, { processorAccountId: crypto.randomUUID(), cashAccountId: crypto.randomUUID(), feeAccountId: crypto.randomUUID() });
+    log('ledger-settlement-journal', ledger.post({ referenceType: 'SETTLEMENT', referenceId: settlementItemId, correlationId: crypto.randomUUID(), entries }));
+  }
+  if (mode === 'manual-review') log('repair-decision', 'AMOUNT_MISMATCH is REQUIRES_REVIEW; no Payment, PSP, or Ledger mutation is performed.');
+}
+
+async function autoRepairUnknownPayment() {
+  const { application, psp } = paymentFixture();
+  const input = { walletId: crypto.randomUUID(), merchantId: crypto.randomUUID(), customerId: crypto.randomUUID(), amountMinor: 10_000, currency: 'USD' };
+  const created = await application.create(input, `reconcile-${crypto.randomUUID()}`, crypto.randomUUID());
+  await application.authorize(created.id, input.customerId, crypto.randomUUID());
+  const unknown = await application.capture(created.id, `capture-${created.id}`, crypto.randomUUID(), 'TIMEOUT_AFTER_PROCESSING');
+  const providerCapture = psp.allRecords().find((record) => record.operation === 'CAPTURE')!;
+  log('payment-before-repair', unknown); log('authoritative-provider-operation', providerCapture);
+  log('payment-after-verified-reconciliation-repair', await application.reconcileSucceededOperation({ operationId: providerCapture.operationId, amountMinor: providerCapture.amountMinor, currency: providerCapture.currency, externalPaymentId: providerCapture.externalPaymentId, providerSequence: providerCapture.providerSequence }, crypto.randomUUID()));
+}
+
 switch (scenario) {
   case 'happy-payment': await happyPayment(); break;
   case 'payment-timeout': await paymentTimeout(); break;
@@ -95,6 +132,13 @@ switch (scenario) {
   case 'webhook-ordering': await webhookOrdering(); break;
   case 'transfer-concurrency': await transferConcurrency(); break;
   case 'reconciliation-mismatch': reconciliationMismatch(); break;
+  case 'settlement-happy-path': settlementDemo('happy'); break;
+  case 'reconciliation-ledger-missing': settlementDemo('ledger-missing'); break;
+  case 'reconciliation-provider-missing': settlementDemo('provider-missing'); break;
+  case 'reconciliation-amount-mismatch': settlementDemo('amount-mismatch'); break;
+  case 'duplicate-settlement': settlementDemo('duplicate'); break;
+  case 'auto-repair-unknown-payment': await autoRepairUnknownPayment(); break;
+  case 'manual-review-mismatch': settlementDemo('manual-review'); break;
   case 'refund': await happyPayment(true); break;
   default: throw new Error(`Unknown demo '${scenario ?? ''}'`);
 }

@@ -103,3 +103,57 @@ docker compose restart psp-simulator payment-service ledger-service
 ```
 
 Trace `requestId`, `correlationId`, `paymentId`, operation ID, and `eventId` across logs and tables. A pending outbox or webhook row is durable work, not a lost event.
+
+## Settlement and reconciliation database
+
+```bash
+docker compose exec postgres psql -U ledgerflow -d reconciliation
+```
+
+```sql
+SELECT id, provider, provider_settlement_id, status, window_start, window_end,
+       currency, item_count, gross_total_minor, fee_total_minor,
+       net_total_minor, signature_verified, integrity_errors, completed_at
+FROM settlement_batches ORDER BY created_at;
+
+SELECT id, batch_id, provider_item_id, provider_transaction_id, payment_id,
+       operation_id, operation_type, gross_amount_minor, fee_amount_minor,
+       net_amount_minor, currency, provider_status, status, last_error
+FROM settlement_items ORDER BY batch_id, id;
+
+SELECT id, run_key, provider, settlement_batch_id, status, checkpoint,
+       matched_count, mismatch_count, auto_repair_count, manual_review_count,
+       lease_owner, lease_expires_at, started_at, completed_at
+FROM reconciliation_runs ORDER BY created_at;
+
+SELECT run_id, item_key, payment_id, provider_transaction_id,
+       result, evidence_digest, checked_at
+FROM reconciliation_items ORDER BY checked_at;
+
+SELECT id, discrepancy_type, severity, repair_classification, payment_id,
+       provider_transaction_id, status, first_detected_at, last_detected_at,
+       observation_count, resolved_at, resolution, resolved_by
+FROM reconciliation_discrepancies ORDER BY last_detected_at;
+
+SELECT discrepancy_id, run_id, expected, actual, evidence_digest, observed_at
+FROM discrepancy_observations ORDER BY observed_at;
+
+SELECT discrepancy_id, action, actor, automatic, status, previous_state,
+       resulting_state, evidence, correlation_id, created_at, completed_at
+FROM repair_actions ORDER BY created_at;
+
+SELECT id, topic, payload->>'eventType' event_type, aggregate_id,
+       attempts, published_at, dead_lettered_at, last_error
+FROM outbox_events ORDER BY created_at;
+```
+
+### Walkthrough: capture exists but Ledger is missing
+
+1. Confirm `payments.status = 'CAPTURED'`, the capture operation is `SUCCEEDED`, and the PSP row with that `operation_id` is `SUCCEEDED`.
+2. Confirm there is no Ledger `PAYMENT` journal for the payment ID using the Ledger queries above.
+3. Generate/fetch the statement, then run `POST /v1/reconciliation/runs` with `x-operator-token`. Inspect the `LEDGER_ENTRY_MISSING` discrepancy and its first observation.
+4. Call `POST /v1/reconciliation/discrepancies/:id/retry-repair`. Inspect the `repair_actions` row and `ledgerflow.repairs.v1` outbox row.
+5. In Ledger, observe one inbox row, one `PAYMENT` journal, and balanced entries. Replaying the repair event does not add another journal.
+6. Resolve the discrepancy through the operator API. A later matching run leaves the old observation and repair action intact.
+
+Do not manually `INSERT` Ledger entries or update Payment status while debugging. Those shortcuts bypass invariants and destroy the audit trail.

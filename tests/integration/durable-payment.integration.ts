@@ -64,9 +64,9 @@ describe.sequential('durable Payment -> Kafka -> Ledger flow', () => {
   const kafka = new Kafka({ clientId: 'ledgerflow-integration-setup', brokers, logLevel: logLevel.NOTHING });
 
   beforeAll(async () => {
-    await resetDatabase(paymentUrl, ['apps/payment-service/migrations/0001_payment.sql', 'apps/payment-service/migrations/0002_outbox_leases.sql', 'apps/payment-service/migrations/0003_payment_lifecycle.sql']);
+    await resetDatabase(paymentUrl, ['apps/payment-service/migrations/0001_payment.sql', 'apps/payment-service/migrations/0002_outbox_leases.sql', 'apps/payment-service/migrations/0003_payment_lifecycle.sql', 'apps/payment-service/migrations/0004_reconciliation_recovery.sql']);
     await resetDatabase(ledgerUrl, ['apps/ledger-service/migrations/0001_ledger.sql', 'apps/ledger-service/migrations/0002_inbox_and_balance.sql']);
-    await resetDatabase(pspUrl, ['apps/psp-simulator/migrations/0001_psp.sql', 'apps/psp-simulator/migrations/0002_durable_operations.sql']);
+    await resetDatabase(pspUrl, ['apps/psp-simulator/migrations/0001_psp.sql', 'apps/psp-simulator/migrations/0002_durable_operations.sql', 'apps/psp-simulator/migrations/0003_settlement_statements.sql']);
     if (kafkaEnabled) {
       const admin = kafka.admin();
       await admin.connect();

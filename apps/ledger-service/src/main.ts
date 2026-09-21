@@ -1,7 +1,7 @@
 import 'reflect-metadata';
-import { Body, Controller, Get, Injectable, Module, Param, Post, ServiceUnavailableException, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { Body, Controller, Get, Injectable, Module, Param, Post, Query, ServiceUnavailableException, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsIn, IsInt, IsPositive, IsString, IsUUID, ValidateNested } from 'class-validator';
+import { IsArray, IsISO8601, IsIn, IsInt, IsOptional, IsPositive, IsString, IsUUID, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { bootstrapService, requiredEnvironment } from '@ledgerflow/platform';
 import type { EntryDirection, LedgerJournal } from './ledger.domain.js';
@@ -21,6 +21,12 @@ class JournalDto {
   @ApiProperty() @IsUUID() correlationId!: string;
   @ApiProperty({ type: [EntryDto] }) @IsArray() @ValidateNested({ each: true }) @Type(() => EntryDto) entries!: EntryDto[];
 }
+class ReconciliationPageQuery {
+  @IsISO8601() windowStart!: string;
+  @IsISO8601() windowEnd!: string;
+  @IsOptional() @IsUUID() after?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit = 100;
+}
 
 const { client, db } = createLedgerDatabase(requiredEnvironment('DATABASE_URL'));
 const ledger = new PostgresLedgerRepository(db);
@@ -39,6 +45,11 @@ class LedgerController {
     return { status: 'ready', persistence: 'postgresql', messaging: 'redpanda-kafka' };
   }
   @Post('v1/journals') post(@Body() body: JournalDto) { return ledger.postJournal(body); }
+  @Get('v1/reconciliation/journals')
+  async reconciliationJournals(@Query() query: ReconciliationPageQuery) {
+    const data = await ledger.listForReconciliation(new Date(query.windowStart), new Date(query.windowEnd), query.after, query.limit);
+    return { data, nextCursor: data.length === query.limit ? data.at(-1)?.id ?? null : null };
+  }
   @Get('v1/accounts/:id/balance/:currency')
   async balance(@Param('id') id: string, @Param('currency') currency: string) {
     return { accountId: id, currency, balanceMinor: await ledger.balance(id, currency) };

@@ -48,6 +48,7 @@ services:
       DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/psp
       PAYMENT_WEBHOOK_URL: http://payment-service:3002/v1/webhooks/psp
       PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:?set PSP_WEBHOOK_SECRET in .env}
+      PSP_STATEMENT_SECRET: ${PSP_STATEMENT_SECRET:?set PSP_STATEMENT_SECRET in .env}
     ports: ["3004:3004"]
     depends_on:
       migrations: { condition: service_completed_successfully }
@@ -93,9 +94,23 @@ services:
   reconciliation-service:
     build: .
     command: ["pnpm", "tsx", "apps/reconciliation-service/src/main.ts"]
-    environment: ["PORT=3006"]
+    environment:
+      PORT: 3006
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/reconciliation
+      PAYMENT_URL: http://payment-service:3002
+      PSP_URL: http://psp-simulator:3004
+      LEDGER_URL: http://ledger-service:3005
+      KAFKA_BROKERS: redpanda:9092
+      PSP_STATEMENT_SECRET: ${PSP_STATEMENT_SECRET:?set PSP_STATEMENT_SECRET in .env}
+      RECONCILIATION_OPERATOR_TOKEN: ${RECONCILIATION_OPERATOR_TOKEN:?set RECONCILIATION_OPERATOR_TOKEN in .env}
+      RECONCILIATION_GRACE_MS: 30000
     ports: ["3006:3006"]
-    depends_on: { postgres: { condition: service_healthy } }
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      redpanda: { condition: service_healthy }
+      payment-service: { condition: service_started }
+      psp-simulator: { condition: service_started }
+      ledger-service: { condition: service_started }
 
 volumes:
   postgres-data:

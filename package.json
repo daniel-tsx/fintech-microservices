@@ -25,6 +25,13 @@
     "demo:refund": "tsx scripts/demo.ts refund",
     "demo:durable-payment": "tsx scripts/durable-payment.ts",
     "demo:payment-lifecycle": "tsx scripts/durable-payment.ts"
+    ,"demo:settlement-happy-path": "tsx scripts/demo.ts settlement-happy-path"
+    ,"demo:reconciliation-ledger-missing": "tsx scripts/demo.ts reconciliation-ledger-missing"
+    ,"demo:reconciliation-provider-missing": "tsx scripts/demo.ts reconciliation-provider-missing"
+    ,"demo:reconciliation-amount-mismatch": "tsx scripts/demo.ts reconciliation-amount-mismatch"
+    ,"demo:duplicate-settlement": "tsx scripts/demo.ts duplicate-settlement"
+    ,"demo:auto-repair-unknown-payment": "tsx scripts/demo.ts auto-repair-unknown-payment"
+    ,"demo:manual-review-mismatch": "tsx scripts/demo.ts manual-review-mismatch"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

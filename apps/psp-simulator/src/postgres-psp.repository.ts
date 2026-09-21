@@ -1,7 +1,9 @@
 import { eq } from 'drizzle-orm';
 import type { PspOperationInput, PspPort, PspResult, PspStatus, PaymentOperationType, WebhookEnvelope } from '../../payment-service/src/payment.domain.js';
-import { pspOperations } from './database.schema.js';
+import { pspOperations, pspSettlementStatements } from './database.schema.js';
 import type { PspDatabase } from './database.js';
+import { SettlementStatementSimulator, type ProviderSettlementStatement, type StatementScenario } from './settlement-statement.js';
+import type { PspRecord } from './psp-simulator.js';
 
 export class PspHttpError extends Error {}
 
@@ -24,8 +26,30 @@ export class PostgresPspRepository implements PspPort {
     return row === undefined ? { outcome: 'NOT_FOUND' } : this.toResult(row);
   }
 
-  async allRecords() {
-    return this.db.select().from(pspOperations).orderBy(pspOperations.providerSequence);
+  async allRecords(): Promise<PspRecord[]> {
+    const rows = await this.db.select().from(pspOperations).orderBy(pspOperations.providerSequence);
+    return rows.map((row) => ({ externalPaymentId: row.externalPaymentId, operationId: row.operationId, paymentId: row.internalPaymentId, operation: row.operation, amountMinor: row.amountMinor, currency: row.currency, status: row.status, providerSequence: row.providerSequence, createdAt: row.createdAt.toISOString() }));
+  }
+
+  async listForReconciliation(windowStart: Date, windowEnd: Date, afterId: string | undefined, limit: number): Promise<PspRecord[]> {
+    return (await this.allRecords()).filter((record) => new Date(record.createdAt) >= windowStart && new Date(record.createdAt) < windowEnd && (afterId === undefined || record.operationId > afterId))
+      .sort((left, right) => left.operationId.localeCompare(right.operationId)).slice(0, limit);
+  }
+
+  async generateStatement(input: { providerSettlementId: string; windowStart: string; windowEnd: string; currency: string; scenario?: StatementScenario }, secret: string): Promise<{ statement: ProviderSettlementStatement; duplicate: boolean }> {
+    const [existing] = await this.db.select().from(pspSettlementStatements).where(eq(pspSettlementStatements.providerSettlementId, input.providerSettlementId)).limit(1);
+    if (existing !== undefined) return { statement: existing.statement as ProviderSettlementStatement, duplicate: true };
+    const statement = new SettlementStatementSimulator(secret).generate({ ...input, records: await this.allRecords() });
+    const inserted = await this.db.insert(pspSettlementStatements).values({ providerSettlementId: input.providerSettlementId, statement }).onConflictDoNothing().returning();
+    if (inserted[0] !== undefined) return { statement, duplicate: false };
+    const [winner] = await this.db.select().from(pspSettlementStatements).where(eq(pspSettlementStatements.providerSettlementId, input.providerSettlementId)).limit(1);
+    if (winner === undefined) throw new Error('settlement statement upsert did not return a record');
+    return { statement: winner.statement as ProviderSettlementStatement, duplicate: true };
+  }
+
+  async findStatement(providerSettlementId: string): Promise<ProviderSettlementStatement | null> {
+    const [row] = await this.db.select().from(pspSettlementStatements).where(eq(pspSettlementStatements.providerSettlementId, providerSettlementId)).limit(1);
+    return row === undefined ? null : row.statement as ProviderSettlementStatement;
   }
 
   private async execute(operation: PaymentOperationType, input: PspOperationInput): Promise<PspResult> {

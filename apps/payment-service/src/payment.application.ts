@@ -137,6 +137,14 @@ export class PaymentApplication {
     return this.executeOperation(operation, payment, correlationId, undefined, 'RECOVERY');
   }
 
+  async reconcileSucceededOperation(input: { operationId: string; amountMinor: number; currency: string; externalPaymentId: string; providerSequence: number }, correlationId: string): Promise<Payment> {
+    const operation = await this.repository.findOperationById(input.operationId);
+    if (operation === null) throw new PaymentNotFoundError(`payment operation ${input.operationId} not found`);
+    if (!['PENDING', 'UNKNOWN'].includes(operation.status)) return this.requirePayment(operation.paymentId);
+    if (operation.amountMinor !== input.amountMinor || operation.currency !== input.currency) throw new PaymentConflictError('reconciliation evidence does not match the original operation');
+    return this.repository.resolveOperation({ operationId: input.operationId, result: { outcome: 'SUCCEEDED', externalPaymentId: input.externalPaymentId, providerSequence: input.providerSequence }, source: 'RECONCILIATION', correlationId });
+  }
+
   private async getOrBeginOperation(input: {
     payment: Payment;
     type: PaymentOperationType;

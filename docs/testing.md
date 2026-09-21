@@ -30,3 +30,5 @@ The current deterministic matrix is split intentionally: protocol-independent de
 `pnpm demo:durable-payment` starts the real slice, executes authorize/capture/refund, restarts services, replays Kafka events, and leaves state available for inspection. Scenario demos in `scripts/demo.ts` make uncertainty and webhook concepts visible without infrastructure.
 
 Verification records must distinguish execution from static readiness. On a host without Docker or disposable database credentials, `pnpm test:integration` and service demos are not verified merely because they compile.
+
+The integration suite also covers reconciliation statement replay, unique run identities and leases, transactional settlement outbox idempotency across restarted runs, and preserved discrepancy observations after resolution. These tests use the real `reconciliation` PostgreSQL database. A failed connection when infrastructure is unavailable is reported as unexecuted infrastructure verification, never converted into a mocked pass.

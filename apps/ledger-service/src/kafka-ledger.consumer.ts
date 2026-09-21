@@ -1,4 +1,4 @@
-import { eventEnvelopeSchema, eventTypes, paymentCapturedEventSchema, paymentEventsTopic, paymentRefundedEventSchema } from '@ledgerflow/contracts';
+import { eventEnvelopeSchema, eventTypes, ledgerRepairRequestedEventSchema, paymentCapturedEventSchema, paymentEventsTopic, paymentRefundedEventSchema, repairEventsTopic, settlementCreatedEventSchema, settlementEventsTopic } from '@ledgerflow/contracts';
 import { structuredLog } from '@ledgerflow/platform';
 import { Kafka, logLevel, type Consumer } from 'kafkajs';
 import type { PostgresLedgerRepository } from './postgres-ledger.repository.js';
@@ -23,14 +23,15 @@ export class KafkaLedgerConsumer {
     await admin.connect();
     try {
       const topics = await admin.listTopics();
-      if (!topics.includes(paymentEventsTopic)) {
-        await admin.createTopics({ waitForLeaders: true, topics: [{ topic: paymentEventsTopic, numPartitions: 3, replicationFactor: 1 }] });
-      }
+      const requiredTopics = [paymentEventsTopic, settlementEventsTopic, repairEventsTopic].filter((topic) => !topics.includes(topic));
+      if (requiredTopics.length > 0) await admin.createTopics({ waitForLeaders: true, topics: requiredTopics.map((topic) => ({ topic, numPartitions: 3, replicationFactor: 1 })) });
     } finally {
       await admin.disconnect();
     }
     await this.consumer.connect();
     await this.consumer.subscribe({ topic: paymentEventsTopic, fromBeginning: true });
+    await this.consumer.subscribe({ topic: settlementEventsTopic, fromBeginning: true });
+    await this.consumer.subscribe({ topic: repairEventsTopic, fromBeginning: true });
     this.runPromise = this.consumer.run({
       autoCommit: false,
       eachMessage: async ({ topic, partition, message }) => {
@@ -59,6 +60,14 @@ export class KafkaLedgerConsumer {
             partition,
             offset: message.offset,
           });
+        } else if (parsed.eventType === eventTypes.settlementCreated) {
+          const event = settlementCreatedEventSchema.parse(parsed);
+          const result = await this.repository.processSettlementCreated(event);
+          structuredLog('info', result === 'DUPLICATE' ? 'duplicate settlement event ignored' : 'settlement item posted to ledger', { eventId: event.eventId, correlationId: event.correlationId, settlementBatchId: event.payload.settlementBatchId, settlementItemId: event.payload.settlementItemId, paymentId: event.payload.paymentId, topic, partition, offset: message.offset });
+        } else if (parsed.eventType === eventTypes.ledgerRepairRequested) {
+          const event = ledgerRepairRequestedEventSchema.parse(parsed);
+          const result = await this.repository.processLedgerRepair(event);
+          structuredLog('info', result === 'DUPLICATE' ? 'duplicate ledger repair event ignored' : 'verified missing capture journal repaired', { eventId: event.eventId, correlationId: event.correlationId, discrepancyId: event.payload.discrepancyId, paymentId: event.payload.paymentId, topic, partition, offset: message.offset });
         } else {
           structuredLog('info', 'non-financial payment event acknowledged by ledger', { eventId: parsed.eventId, correlationId: parsed.correlationId, paymentId: parsed.aggregateId, eventType: parsed.eventType });
         }
@@ -70,7 +79,7 @@ export class KafkaLedgerConsumer {
       structuredLog('error', 'ledger Kafka consumer stopped unexpectedly', { error: error instanceof Error ? error.message : 'unknown error' });
     });
     this.ready = true;
-    structuredLog('info', 'ledger Kafka consumer started', { topic: paymentEventsTopic, groupId: this.groupId });
+    structuredLog('info', 'ledger Kafka consumer started', { topics: [paymentEventsTopic, settlementEventsTopic, repairEventsTopic], groupId: this.groupId });
   }
 
   async stop(): Promise<void> {

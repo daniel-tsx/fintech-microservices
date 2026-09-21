@@ -80,6 +80,12 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
   async rescheduleWebhook(workerId: string, eventId: string): Promise<void> { const stored = this.webhooks.get(eventId); if (stored?.lockedBy === workerId) stored.lockedBy = null; }
   async findRecoverableOperations(olderThan: Date, limit: number): Promise<PaymentOperation[]> { return Array.from(this.operations.values()).filter((operation) => ['PENDING', 'UNKNOWN'].includes(operation.status) && new Date(operation.updatedAt) < olderThan).slice(0, limit).map((operation) => structuredClone(operation)); }
+  async listForReconciliation(windowStart: Date, windowEnd: Date, afterId: string | undefined, limit: number): Promise<Array<Payment & { operations: PaymentOperation[] }>> {
+    return Array.from(this.payments.values())
+      .filter((payment) => new Date(payment.updatedAt) >= windowStart && new Date(payment.updatedAt) < windowEnd && (afterId === undefined || payment.id > afterId))
+      .sort((left, right) => left.id.localeCompare(right.id)).slice(0, limit)
+      .map((payment) => ({ ...structuredClone(payment), operations: Array.from(this.operations.values()).filter((operation) => operation.paymentId === payment.id).map((operation) => structuredClone(operation)) }));
+  }
 
   private async resolve(operationId: string, result: PspResult, source: ResolutionSource, correlationId: string, causationId?: string): Promise<Payment> {
     const operation = this.operations.get(operationId); if (operation === undefined) throw new Error(`operation ${operationId} not found`); const current = this.requirePayment(operation.paymentId);
